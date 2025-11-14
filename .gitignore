@@ -42,3 +42,5 @@ vault-init.json
 
 vault-secret-id.txt
 vault-role-id.txt
+
+libpkcs11-proxy.so
