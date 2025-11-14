@@ -37,14 +37,14 @@ module "minio_operator" {
 }
 
 # Vault Minio Connection
-module "vault_initialize" {
-  source = "./modules/vault-minio-connection"
-  depends_on = [ module.vault, module.minio_operator ]
-  namespace = var.vault_namespace
-  kes_policy_path = var.kes_policy_path
-  policy_name = var.policy_name
-  approle_name = var.approle_name
-}
+#module "vault_initialize" {
+#  source = "./modules/vault-minio-connection"
+#  depends_on = [ module.vault, module.minio_operator ]
+#  namespace = var.vault_namespace
+#  kes_policy_path = var.kes_policy_path
+#  policy_name = var.policy_name
+#  approle_name = var.approle_name
+#}
 
 
 
