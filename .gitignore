@@ -37,3 +37,8 @@ terraform.tfvars.json
 # Keys/certs (if generated/placed in repo root)
 *.pem
 *.key
+
+vault-init.json
+
+vault-secret-id.txt
+vault-role-id.txt
