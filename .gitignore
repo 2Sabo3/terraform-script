@@ -1,0 +1,39 @@
+# Terraform local state and directories
+.terraform/
+
+# State files
+*.tfstate
+*.tfstate.backup
+*.tfstate.lock.info
+
+# Crash logs
+crash.log
+
+# CLI config (may contain credentials)
+.terraformrc
+terraform.rc
+
+# Override files (local tweaks)
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+
+# Sensitive variable files
+terraform.tfvars
+terraform.tfvars.json
+*.auto.tfvars
+*.auto.tfvars.json
+
+# Plan output
+*.tfplan
+*.tfplan.hcl
+
+# Backup and temporary files
+*.backup
+*.swp
+*~
+
+# Keys/certs (if generated/placed in repo root)
+*.pem
+*.key
