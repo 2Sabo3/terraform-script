@@ -1,0 +1,37 @@
+loki:
+  auth_enabled: false
+
+  storage:
+    type: filesystem
+
+    bucketNames:
+      chunks: chunks
+      ruler: ruler
+      admin: admin
+
+schemaConfig:
+  configs:
+    - from: "2020-10-24"
+      store: boltdb-shipper
+      object_store: filesystem
+      schema: v13
+      index:
+        prefix: index_
+        period: 24h
+
+commonConfig:
+  path_prefix: /var/loki
+
+singleBinary:
+  replicas: 1
+
+  persistence:
+    enabled: true
+    size: 10Gi
+    storageClass: "standard"
+    accessModes:
+      - ReadWriteOnce
+
+compactor:
+  working_directory: /var/loki/compactor
+  shared_store: filesystem

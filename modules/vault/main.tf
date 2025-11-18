@@ -1,168 +1,14 @@
-# PostgreSQL Database Setup
-resource "kubernetes_namespace" "vault" {
-  metadata {
-    name = "vault"
-  }
-}
-
-# PostgreSQL credentials (for reference)
-resource "kubernetes_secret" "postgres_credentials" {
-  metadata {
-    name      = "postgres-credentials"
-    namespace = kubernetes_namespace.vault.metadata[0].name
-  }
-
-  data = {
-    username = "vaultuser"
-    password = "VaultSecurePass123!"
-    database = "vault"
-  }
-}
-
-# PostgreSQL Helm Chart
-resource "helm_release" "postgresql" {
-  name       = "postgresql"
-  repository = "https://charts.bitnami.com/bitnami"
-  chart      = "postgresql"
-  version    = "15.5.32"
-  namespace  = kubernetes_namespace.vault.metadata[0].name
-
-  values = [<<-EOF
-    image:
-      registry: docker.io
-      repository: bitnami/postgresql
-      tag: "latest"
-    
-    auth:
-      username: vaultuser
-      password: VaultSecurePass123!
-      database: vault
-      postgresPassword: PostgresRootPass123!
-    
-    primary:
-      persistence:
-        enabled: true
-        size: 10Gi
-        storageClass: standard
-      
-      resources:
-        requests:
-          memory: "256Mi"
-          cpu: "250m"
-        limits:
-          memory: "512Mi"
-          cpu: "500m"
-    
-    metrics:
-      enabled: false
-  EOF
-  ]
-}
-
-# Job to create Vault tables in PostgreSQL
-resource "kubernetes_job" "create_vault_tables" {
-  metadata {
-    name      = "create-vault-tables"
-    namespace = kubernetes_namespace.vault.metadata[0].name
-  }
-
-  spec {
-    template {
-      metadata {
-        name = "create-vault-tables"
-      }
-
-      spec {
-        restart_policy = "OnFailure"
-
-        container {
-          name  = "create-tables"
-          image = "bitnami/postgresql:latest"
-
-          command = [
-            "/bin/sh",
-            "-c",
-            <<-EOT
-              until psql "postgresql://vaultuser:VaultSecurePass123!@postgresql.vault.svc.cluster.local:5432/vault" -c '\q'; do
-                echo "Waiting for PostgreSQL to be ready..."
-                sleep 2
-              done
-              
-              echo "PostgreSQL is ready. Creating Vault tables..."
-              
-              psql "postgresql://vaultuser:VaultSecurePass123!@postgresql.vault.svc.cluster.local:5432/vault" <<-SQL
-                -- Create vault_kv_store table
-                CREATE TABLE IF NOT EXISTS vault_kv_store (
-                  parent_path TEXT COLLATE "C" NOT NULL,
-                  path        TEXT COLLATE "C" NOT NULL,
-                  key         TEXT COLLATE "C" NOT NULL,
-                  value       BYTEA,
-                  CONSTRAINT pkey PRIMARY KEY (path, key)
-                );
-
-                CREATE INDEX IF NOT EXISTS parent_path_idx ON vault_kv_store (parent_path);
-
-                -- Create vault_ha_locks table
-                CREATE TABLE IF NOT EXISTS vault_ha_locks (
-                  ha_key                      TEXT COLLATE "C" NOT NULL,
-                  ha_identity                 TEXT COLLATE "C" NOT NULL,
-                  ha_value                    TEXT COLLATE "C",
-                  valid_until                 TIMESTAMP WITH TIME ZONE NOT NULL,
-                  CONSTRAINT ha_key PRIMARY KEY (ha_key)
-                );
-
-                -- Verify tables were created
-                \dt
-
-                -- Show table structures
-                \d vault_kv_store
-                \d vault_ha_locks
-              SQL
-              
-              echo "Tables created successfully!"
-            EOT
-          ]
-        }
-      }
-    }
-
-    backoff_limit = 4
-  }
-
-  wait_for_completion = true
-  timeouts {
-    create = "5m"
-  }
-
-  depends_on = [helm_release.postgresql]
-}
-
-# Vault configuration secret for PostgreSQL
-resource "kubernetes_secret" "vault_postgres_config" {
-  metadata {
-    name      = "vault-postgres-config"
-    namespace = kubernetes_namespace.vault.metadata[0].name
-  }
-
-  data = {
-    connection_url = base64encode("postgres://vaultuser:VaultSecurePass123!@postgresql.vault.svc.cluster.local:5432/vault?sslmode=disable")
-  }
-
-  depends_on = [kubernetes_job.create_vault_tables]
-}
-
-# Vault Helm Release with PostgreSQL backend
 resource "helm_release" "vault" {
-  name             = "vault"
-  repository       = "https://helm.releases.hashicorp.com"
-  chart            = "vault"
-  version          = "0.28.1"
-  namespace        = kubernetes_namespace.vault.metadata[0].name
-  create_namespace = true
+  name       = "vault"
+  chart      = "vault"
+  repository = "https://helm.releases.hashicorp.com"
+  version    = var.vault_chart_version
+  namespace  = var.namespace
 
-  values = [<<-EOF
+  values = [<<EOF
   global:
     tlsDisable: true
+
 
   server:
     affinity: {}
@@ -179,7 +25,6 @@ resource "helm_release" "vault" {
     ha:
       enabled: true
       replicas: 3
-
       raft:
         enabled: false
 
@@ -193,8 +38,7 @@ resource "helm_release" "vault" {
         }
 
         storage "postgresql" {
-          connection_url = "postgres://vaultuser:VaultSecurePass123!@postgresql.vault.svc.cluster.local:5432/vault?sslmode=disable"
-          max_parallel   = 128
+          connection_url = "${var.connection_url}"
           table          = "vault_kv_store"
           ha_enabled     = "true"
           ha_table       = "vault_ha_locks"
@@ -204,91 +48,21 @@ resource "helm_release" "vault" {
 
         api_addr      = "http://vault.vault.svc.cluster.local:8200"
         cluster_addr  = "https://vault.vault.svc.cluster.local:8201"
+        
+      ui:
+        enabled: true
 
-    ui:
-      enabled: true
+      dataStorage:
+        enabled: false
+      
+      auditStorage:
+        enabled: false
 
-    dataStorage:
-      enabled: false
-
-    auditStorage:
-      enabled: false
-
-  injector:
-    enabled: false
-  EOF
+      injector:
+        enabled: false
+EOF
   ]
 
-  depends_on = [
-    kubernetes_job.create_vault_tables,
-    kubernetes_secret.vault_postgres_config
-  ]
-}
 
-# Output for initialization
-output "vault_init_command" {
-  value = <<-EOT
-    # Wait for Vault pods to be ready
-    kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=vault -n vault --timeout=300s
-
-    # Check Vault status (should show "not initialized")
-    kubectl exec -n vault vault-0 -- vault status
-
-    # Initialize Vault (run only once)
-    kubectl exec -n vault vault-0 -- vault operator init -key-shares=5 -key-threshold=3
-
-    # Save the unseal keys and root token securely!
-    
-    # Unseal each Vault pod (use 3 different unseal keys)
-    kubectl exec -n vault vault-0 -- vault operator unseal <unseal-key-1>
-    kubectl exec -n vault vault-0 -- vault operator unseal <unseal-key-2>
-    kubectl exec -n vault vault-0 -- vault operator unseal <unseal-key-3>
-
-    kubectl exec -n vault vault-1 -- vault operator unseal <unseal-key-1>
-    kubectl exec -n vault vault-1 -- vault operator unseal <unseal-key-2>
-    kubectl exec -n vault vault-1 -- vault operator unseal <unseal-key-3>
-
-    kubectl exec -n vault vault-2 -- vault operator unseal <unseal-key-1>
-    kubectl exec -n vault vault-2 -- vault operator unseal <unseal-key-2>
-    kubectl exec -n vault vault-2 -- vault operator unseal <unseal-key-3>
-  EOT
-  description = "Commands to initialize and unseal Vault"
-}
-
-output "vault_status_command" {
-  value       = "kubectl exec -n vault vault-0 -- vault status"
-  description = "Command to check Vault status"
-}
-
-output "postgres_connection_test" {
-  value = <<-EOT
-    # Test PostgreSQL connection
-    kubectl exec -n vault deployment/postgresql -- psql -U vaultuser -d vault -c "\dt"
-    
-    # Should show vault_kv_store and vault_ha_locks tables
-    
-    # Check table contents after Vault initialization
-    kubectl exec -n vault deployment/postgresql -- psql -U vaultuser -d vault -c "SELECT COUNT(*) FROM vault_kv_store;"
-    kubectl exec -n vault deployment/postgresql -- psql -U vaultuser -d vault -c "SELECT * FROM vault_ha_locks;"
-  EOT
-  description = "Commands to verify PostgreSQL tables"
-}
-
-output "troubleshooting_commands" {
-  value = <<-EOT
-    # Check if tables were created
-    kubectl logs -n vault job/create-vault-tables
-
-    # Check Vault logs
-    kubectl logs -n vault vault-0
-
-    # Check all Vault pods
-    kubectl get pods -n vault
-
-    # If you need to recreate tables manually:
-    kubectl exec -n vault deployment/postgresql -- psql -U vaultuser -d vault -c "DROP TABLE IF EXISTS vault_kv_store CASCADE; DROP TABLE IF EXISTS vault_ha_locks CASCADE;"
-    kubectl delete job -n vault create-vault-tables
-    # Then re-apply terraform
-  EOT
-  description = "Troubleshooting commands"
+  
 }

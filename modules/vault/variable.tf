@@ -1,6 +1,3 @@
-variable "kubeconfig" {
-  type = string
-}
-variable "namespace" {
-  type = string
-}
+variable "namespace" {}
+variable "vault_chart_version" {}
+variable "connection_url" {}
